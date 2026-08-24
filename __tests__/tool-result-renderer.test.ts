@@ -1,9 +1,13 @@
 import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import {
+  createMcpDirectToolCallRenderer,
+  resolveMcpToolRenderOptions,
   formatMcpDirectToolCallLines,
   formatMcpProxyToolCallLines,
+  formatMcpToolResultIdentity,
   formatMcpToolResultLines,
+  renderMcpProxyToolCall,
   renderMcpToolResult,
 } from "../tool-result-renderer.ts";
 
@@ -28,6 +32,18 @@ describe("MCP tool call renderer", () => {
     expect(display).toEqual([
       "mcp call cf-portal_list_worker_tail_events @ cf-portal",
       '{\n  "accountId": "abc",\n  "scriptName": "worker"\n}',
+    ]);
+  });
+
+  it("shows proxy tool calls with native object arguments", () => {
+    const display = formatMcpProxyToolCallLines({
+      tool: "cf-portal_list_worker_tail_events",
+      args: { accountId: "abc", limit: 10 },
+    });
+
+    expect(display).toEqual([
+      "mcp call cf-portal_list_worker_tail_events",
+      '{\n  "accountId": "abc",\n  "limit": 10\n}',
     ]);
   });
 
@@ -119,6 +135,123 @@ describe("MCP tool result renderer", () => {
     expect(display.truncated).toBe(false);
   });
 
+  it("formats proxy call result identity from details", () => {
+    expect(formatMcpToolResultIdentity({ mode: "call", server: "figma", tool: "get_nodes" })).toBe("MCP figma/get_nodes");
+    expect(formatMcpToolResultIdentity({ mode: "call", server: "files", resourceUri: "file://demo" })).toBe("MCP files resource file://demo");
+    expect(formatMcpToolResultIdentity({ mode: "call", server: "figma", requestedTool: "figma_get_nodes" })).toBe("MCP figma/figma_get_nodes");
+    expect(formatMcpToolResultIdentity({ mode: "call", hintServer: "figma", requestedTool: "figma_get_nodes" })).toBe("MCP figma/figma_get_nodes");
+    expect(formatMcpToolResultIdentity({ mode: "list", server: "figma", tool: "get_nodes" })).toBeNull();
+  });
+
+  it("renders collapsed results as a compact single line by default", () => {
+    const output = renderMcpToolResult(
+      result([{
+        type: "text",
+        text: "segment-1 segment-2 segment-3 segment-4 segment-5 segment-6 segment-7 segment-8",
+      }]),
+      collapsedOptions,
+      plainTheme,
+      { isError: false },
+    ).render(20).join("\n");
+
+    expect(output).toContain("segment-1");
+    expect(output).toContain("Ctrl+O");
+    expect(output).toContain("…");
+    expect(output).not.toContain("segment-8");
+  });
+
+  it("bounds a huge single-line collapsed result and shows the expand hint", () => {
+    const huge = `head ${"x".repeat(50_000)} tail-marker`;
+    const output = renderMcpToolResult(
+      result([{ type: "text", text: huge }]),
+      collapsedOptions,
+      plainTheme,
+      { isError: false },
+    ).render(80).join("\n");
+
+    expect(output).toContain("head");
+    expect(output).toContain("Ctrl+O to expand");
+    expect(output).not.toContain("tail-marker");
+  });
+
+  it("reuses truncated collapsed lines at the same width", () => {
+    const renderer = renderMcpToolResult(
+      result([{ type: "text", text: "one\ntwo\nthree\nfour" }]),
+      collapsedOptions,
+      plainTheme,
+      { isError: false },
+    );
+
+    const first = renderer.render(80);
+    const second = renderer.render(80);
+    expect(second).toBe(first);
+    expect(second.join("\n")).toContain("Ctrl+O to expand");
+  });
+
+  it("keeps legacy boxed rendering available", () => {
+    const output = renderMcpToolResult(
+      result([{ type: "text", text: "one\ntwo\nthree\nfour" }], { mode: "call", server: "figma", tool: "get_nodes" }),
+      collapsedOptions,
+      plainTheme,
+      { isError: false },
+      { resultRendering: "boxed", collapsedResultLines: 3 },
+    ).render(80).join("\n");
+
+    expect(output).toContain("MCP figma/get_nodes");
+    expect(output).toContain("one");
+    expect(output).toContain("two");
+    expect(output).toContain("three");
+    expect(output).not.toContain("four");
+    expect(output).toContain("Ctrl+O to expand");
+  });
+
+  it("combines the compact final result with the call title", () => {
+    const state: { compactTitle?: string } = {};
+    const call = createMcpDirectToolCallRenderer("demo_search")(
+      {},
+      plainTheme,
+      { isError: false, isPartial: false, expanded: false, state },
+    );
+    const output = renderMcpToolResult(
+      result([{ type: "text", text: "ok\nextra" }]),
+      collapsedOptions,
+      plainTheme,
+      { isError: false, state },
+    ).render(80).join("\n");
+
+    expect(call.render(80)).toEqual([]);
+    expect(output).toContain("demo_search → ok");
+    expect(output).toContain("Ctrl+O to expand");
+    expect(output).not.toContain("extra");
+  });
+
+  it("resolves compact and boxed rendering settings", () => {
+    expect(resolveMcpToolRenderOptions()).toEqual({ resultRendering: "compact", collapsedResultLines: 1 });
+    expect(resolveMcpToolRenderOptions({ toolResultRendering: "boxed" })).toEqual({
+      resultRendering: "boxed",
+      collapsedResultLines: 3,
+    });
+    expect(resolveMcpToolRenderOptions({ collapsedResultLines: 2 })).toEqual({
+      resultRendering: "compact",
+      collapsedResultLines: 2,
+    });
+  });
+
+  it("shows the full wrapped single line when expanded", () => {
+    const output = renderMcpToolResult(
+      result([{
+        type: "text",
+        text: "segment-1 segment-2 segment-3 segment-4 segment-5 segment-6 segment-7 segment-8",
+      }]),
+      { expanded: true, isPartial: false },
+      plainTheme,
+      { isError: false },
+    ).render(20).join("\n");
+
+    expect(output).toContain("segment-8");
+    expect(output).not.toContain("Ctrl+O to expand");
+  });
+
   it("renders long error results expanded even when the row is collapsed", () => {
     const output = renderMcpToolResult(
       result([{ type: "text", text: "Error: failed\nline 2\nline 3\nline 4" }]),
@@ -132,6 +265,21 @@ describe("MCP tool result renderer", () => {
     expect(output).not.toContain("…");
   });
 
+  it("does not collapse a long single-line error", () => {
+    const output = renderMcpToolResult(
+      result([{
+        type: "text",
+        text: "Error: segment-1 segment-2 segment-3 segment-4 segment-5 segment-6 segment-7 segment-8",
+      }]),
+      collapsedOptions,
+      plainTheme,
+      { isError: true },
+    ).render(20).join("\n");
+
+    expect(output).toContain("segment-8");
+    expect(output).not.toContain("Ctrl+O to expand");
+  });
+
   it("renders adapter error details expanded even when Pi context is not marked as an error", () => {
     const output = renderMcpToolResult(
       result([{ type: "text", text: "Error: failed\nline 2\nline 3\nline 4" }], { error: "tool_error" }),
@@ -143,5 +291,35 @@ describe("MCP tool result renderer", () => {
     expect(output).toContain("line 4");
     expect(output).not.toContain("Ctrl+O to expand");
     expect(output).not.toContain("…");
+  });
+
+  it("renders results without a theme", () => {
+    const output = renderMcpToolResult(
+      result([{ type: "text", text: "hello world" }]),
+      collapsedOptions,
+    ).render(80).join("\n");
+
+    expect(output).toContain("hello world");
+  });
+
+  it("renders partial results without a theme", () => {
+    const output = renderMcpToolResult(
+      result([]),
+      { expanded: false, isPartial: true },
+    ).render(80).join("\n");
+
+    expect(output).toContain("Running MCP tool...");
+  });
+});
+
+describe("MCP tool call renderers without a theme", () => {
+  it("renders proxy calls without a theme", () => {
+    const output = renderMcpProxyToolCall({ tool: "test_tool", server: "demo" }).render(80).join("\n");
+    expect(output).toContain("mcp call test_tool @ demo");
+  });
+
+  it("renders direct calls without a theme", () => {
+    const output = createMcpDirectToolCallRenderer("test_tool")({ key: "value" }).render(80).join("\n");
+    expect(output).toContain("test_tool");
   });
 });

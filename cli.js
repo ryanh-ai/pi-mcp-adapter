@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
+import stripJsonComments from "strip-json-comments";
 
 const HOME = os.homedir();
 
@@ -13,13 +14,36 @@ function expandHome(input) {
   return path.resolve(input);
 }
 
-const AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim()
-  ? expandHome(process.env.PI_CODING_AGENT_DIR.trim())
-  : path.join(HOME, ".pi", "agent");
+function readPiConfig() {
+  const dir = process.env.PI_PACKAGE_DIR?.trim();
+  if (!dir) return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(path.join(path.resolve(dir), "package.json"), "utf8")).piConfig;
+  } catch {
+    return undefined;
+  }
+}
+
+function getConfigDirName() {
+  const configDir = readPiConfig()?.configDir;
+  return typeof configDir === "string" && configDir.trim() ? configDir.trim() : ".pi";
+}
+
+function getAgentDir() {
+  const piConfig = readPiConfig();
+  const appName = typeof piConfig?.name === "string" && piConfig.name.trim() ? piConfig.name.trim() : "pi";
+  const configured = process.env[`${appName.toUpperCase()}_CODING_AGENT_DIR`]?.trim();
+  if (configured) return expandHome(configured);
+  return path.join(HOME, getConfigDirName(), "agent");
+}
+
+const AGENT_DIR = getAgentDir();
 const PI_CONFIG_PATH = path.join(AGENT_DIR, "mcp.json");
 const GENERIC_GLOBAL_CONFIG_PATH = path.join(HOME, ".config", "mcp", "mcp.json");
+const AGENTS_GLOBAL_CONFIG_PATH = path.join(HOME, ".agents", "mcp.json");
+const AGENTS_NESTED_GLOBAL_CONFIG_PATH = path.join(HOME, ".agents", "mcp", "mcp.json");
 const PROJECT_CONFIG_PATH = path.resolve(process.cwd(), ".mcp.json");
-const PROJECT_PI_CONFIG_PATH = path.resolve(process.cwd(), ".pi", "mcp.json");
+const PROJECT_PI_CONFIG_PATH = path.resolve(process.cwd(), getConfigDirName(), "mcp.json");
 
 const IMPORT_PATHS = {
   cursor: [path.join(HOME, ".cursor", "mcp.json")],
@@ -29,7 +53,14 @@ const IMPORT_PATHS = {
     path.join(HOME, ".claude", "claude_desktop_config.json"),
   ],
   "claude-desktop": [path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json")],
-  codex: [path.join(HOME, ".codex", "config.json")],
+  codex: [
+    path.join(HOME, ".codex", "config.toml"),
+    path.join(HOME, ".codex", "config.json"),
+  ],
+  opencode: [
+    path.join(HOME, ".config", "opencode", "opencode.json"),
+    path.resolve(process.cwd(), "opencode.json"),
+  ],
   windsurf: [path.join(HOME, ".windsurf", "mcp.json")],
   vscode: [path.resolve(process.cwd(), ".vscode", "mcp.json")],
 };
@@ -41,10 +72,11 @@ function printHelp(log = console.log) {
   log("Then optionally run:");
   log("  pi-mcp-adapter init       Detect host configs and scaffold Pi imports");
   log("  pi-mcp-adapter init --dry-run");
+  log("  pi-mcp-adapter init --discover-host-configs  Opt in to host config fallback discovery");
 }
 
 function readJsonFile(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  return JSON.parse(stripJsonComments(fs.readFileSync(filePath, "utf-8"), { trailingCommas: true }));
 }
 
 function loadPiConfig() {
@@ -87,6 +119,8 @@ function printDiscovery(log, imports) {
 
   const paths = [
     ["User-global standard MCP", GENERIC_GLOBAL_CONFIG_PATH],
+    ["User-global .agents MCP", AGENTS_GLOBAL_CONFIG_PATH],
+    ["User-global .agents nested MCP", AGENTS_NESTED_GLOBAL_CONFIG_PATH],
     ["Pi global override", PI_CONFIG_PATH],
     ["Project standard MCP", PROJECT_CONFIG_PATH],
     ["Project Pi override", PROJECT_PI_CONFIG_PATH],
@@ -115,6 +149,7 @@ function writePiConfig(config) {
 
 async function runInit(argv, log = console.log) {
   const dryRun = argv.includes("--dry-run");
+  const discoverHostConfigs = argv.includes("--discover-host-configs");
   const foundImports = findAvailableImports();
   const existingConfig = loadPiConfig();
   const existingImports = new Set(existingConfig.imports ?? []);
@@ -124,7 +159,8 @@ async function runInit(argv, log = console.log) {
 
   printDiscovery(log, foundImports);
 
-  if (importsToAdd.length === 0) {
+  const discoverySettingChanged = discoverHostConfigs && existingConfig.settings?.hostConfigDiscovery !== "on";
+  if (importsToAdd.length === 0 && !discoverySettingChanged) {
     log("\nNo Pi config changes needed.");
     log("Standard MCP configs are discovered automatically, and host-specific imports are already configured or unavailable.");
     return 0;
@@ -132,11 +168,17 @@ async function runInit(argv, log = console.log) {
 
   const nextConfig = {
     ...existingConfig,
-    imports: [...existingImports, ...importsToAdd],
+    ...(discoverySettingChanged ? { settings: { ...existingConfig.settings, hostConfigDiscovery: "on" } } : {}),
+    ...(importsToAdd.length > 0 ? { imports: [...existingImports, ...importsToAdd] } : {}),
     mcpServers: existingConfig.mcpServers ?? {},
   };
 
-  log(`\nDetected host configs to import into Pi: ${importsToAdd.join(", ")}`);
+  if (importsToAdd.length > 0) {
+    log(`\nDetected host configs to import into Pi: ${importsToAdd.join(", ")}`);
+  }
+  if (discoverySettingChanged) {
+    log("Opting in to host-specific fallback discovery (standard and Pi-owned configs still take precedence).");
+  }
 
   if (dryRun) {
     log(`Dry run: would update ${PI_CONFIG_PATH}`);
@@ -146,6 +188,9 @@ async function runInit(argv, log = console.log) {
   writePiConfig(nextConfig);
   log(`Updated ${PI_CONFIG_PATH}`);
   log("Pi will now keep reading standard MCP configs automatically, while these imports cover host-specific config formats.");
+  if (discoverySettingChanged) {
+    log("Host config discovery is explicit and does not write to or execute commands from external host files.");
+  }
   return 0;
 }
 
@@ -172,7 +217,8 @@ export async function main(argv = process.argv.slice(2), log = console.log, erro
   return 1;
 }
 
-const isEntrypoint = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const resolvedEntrypoint = process.argv[1] ? fs.realpathSync(process.argv[1]) : undefined;
+const isEntrypoint = resolvedEntrypoint && import.meta.url === pathToFileURL(resolvedEntrypoint).href;
 
 if (isEntrypoint) {
   main().then((code) => {
