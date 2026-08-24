@@ -506,7 +506,7 @@ export interface McpSettings {
   directTools?: boolean;
   /** Show the advisory when 75 or more direct tools resolve. Defaults to true. */
   warnOnLargeDirectTools?: boolean;
-  /** Register the trusted MCP-only JavaScript scripting tool. Defaults to true; set false to hide it. */
+  /** Register the trusted MCP-only JavaScript scripting tool. Defaults to false; set true only for trusted code. */
   scriptMode?: boolean;
   /** Render MCP tool results as compact self-rendered rows by default, or as the legacy boxed row. */
   toolResultRendering?: "compact" | "boxed";

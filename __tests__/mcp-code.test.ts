@@ -18,7 +18,7 @@ function textBlocks(result: Awaited<ReturnType<typeof runMcpScript>>): string[] 
 }
 
 describe("runMcpScript", () => {
-  it("registers mcpScript by default", () => {
+  it("does not register mcpScript by default", () => {
     const registerTool = vi.fn();
     createMcpAdapter({ config: { settings: {}, mcpServers: {} } })({
       registerTool,
@@ -28,26 +28,30 @@ describe("runMcpScript", () => {
       getAllTools: vi.fn(() => []),
     } as any);
 
-    expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({
-      name: "mcpScript",
-      description: expect.stringContaining("multiple MCP tool calls in one request"),
-      promptSnippet: "Batch multiple MCP tool calls in one JavaScript request (loop, filter, chain)",
-    }));
-    expect(registerTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: "mcp_script" }));
+    expect(registerTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: "mcpScript" }));
   });
 
-  it("skips mcpScript when scriptMode is false", () => {
+  it("registers mcpScript only when scriptMode is explicitly true and warns", () => {
     const registerTool = vi.fn();
-    createMcpAdapter({ config: { settings: { scriptMode: false }, mcpServers: {} } })({
-      registerTool,
-      registerFlag: vi.fn(),
-      registerCommand: vi.fn(),
-      on: vi.fn(),
-      getAllTools: vi.fn(() => []),
-    } as any);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      createMcpAdapter({ config: { settings: { scriptMode: true }, mcpServers: {} } })({
+        registerTool,
+        registerFlag: vi.fn(),
+        registerCommand: vi.fn(),
+        on: vi.fn(),
+        getAllTools: vi.fn(() => []),
+      } as any);
 
-    expect(registerTool).toHaveBeenCalled();
-    expect(registerTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: "mcpScript" }));
+      expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({
+        name: "mcpScript",
+        description: expect.stringContaining("multiple MCP tool calls in one request"),
+        promptSnippet: "Batch multiple MCP tool calls in one JavaScript request (loop, filter, chain)",
+      }));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("MCP Script is enabled"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   beforeAll(async () => {

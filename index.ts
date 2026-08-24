@@ -648,7 +648,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     },
   });
 
-  if (earlyConfig.settings?.scriptMode !== false) {
+  if (earlyConfig.settings?.scriptMode === true) {
+    console.warn("MCP Script is enabled: it executes trusted JavaScript. Do not enable it for untrusted prompts, projects, or tool-call content.");
     (pi.registerTool as (tool: unknown) => unknown)({
       name: "mcpScript",
       label: "MCP Script",
